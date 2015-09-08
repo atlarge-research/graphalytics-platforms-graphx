@@ -15,8 +15,13 @@
  */
 package nl.tudelft.graphalytics.graphx
 
+import nl.tudelft.graphalytics.reporting.granula.GranulaManager
+import nl.tudelft.graphalytics.reporting.logging.{GraphalyticLogger, GraphXLogger}
 import nl.tudelft.graphalytics.{PlatformExecutionException, Platform}
-import nl.tudelft.graphalytics.domain.{NestedConfiguration, PlatformBenchmarkResult, Graph, Algorithm}
+import nl.tudelft.graphalytics.domain._
+import nl.tudelft.pds.granula.modeller.graphx.job.GraphX
+import nl.tudelft.pds.granula.modeller.model.Model
+import nl.tudelft.pds.granula.modeller.model.job.JobModel
 import org.apache.commons.configuration.{ConfigurationException, PropertiesConfiguration}
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.conf.Configuration
@@ -26,6 +31,9 @@ import nl.tudelft.graphalytics.graphx.cd.CommunityDetectionJob
 import nl.tudelft.graphalytics.graphx.conn.ConnectedComponentsJob
 import nl.tudelft.graphalytics.graphx.evo.ForestFireModelJob
 import nl.tudelft.graphalytics.graphx.stats.LocalClusteringCoefficientJob
+import org.apache.hadoop.yarn.client.api.YarnClient
+import org.apache.hadoop.yarn.client.cli.LogsCLI
+import org.apache.hadoop.yarn.conf.YarnConfiguration
 
 /**
  * Constants for GraphXPlatform
@@ -64,13 +72,36 @@ class GraphXPlatform extends Platform {
 		val fs = FileSystem.get(new Configuration())
 		fs.copyFromLocalFile(localPath, hdfsPath)
 		fs.close()
-		
-		pathsOfGraphs += (graph.getName -> hdfsPath.toUri.getPath)
+
+			pathsOfGraphs += (graph.getName -> hdfsPath.toUri.getPath)
 	}
 
-	def executeAlgorithmOnGraph(algorithmType : Algorithm,
-			graph : Graph, parameters : Object) : PlatformBenchmarkResult = {
+	def preBenchmark(benchmark : Benchmark) : Unit = {
+
+		GraphXLogger.stopCoreLogging
+		if(GranulaManager.isLoggingEnabled) {
+			val logDataPath = benchmark.getLogPath()
+			GraphXLogger.startPlatformLogging(logDataPath + "/OperationLog/driver.logs")
+		}
+	}
+
+	def postBenchmark(benchmark : Benchmark) : Unit = {
+		if(GranulaManager.isLoggingEnabled) {
+			val logDataPath = benchmark.getLogPath
+			GraphXLogger.stopPlatformLogging
+			GraphXLogger.collectYarnLogs(logDataPath)
+		}
+		GraphXLogger.startCoreLogging
+	}
+
+
+	def executeAlgorithmOnGraph(benchmark : Benchmark) : PlatformBenchmarkResult = {
+		val algorithmType = benchmark.getAlgorithm()
+		val graph = benchmark.getGraph()
+		val parameters = benchmark.getAlgorithmParameters()
+
 		try  {
+
 			val path = pathsOfGraphs(graph.getName)
 			val outPath = s"$hdfsDirectory/${getName}/output/${algorithmType.name}-${graph.getName}"
 			val format = graph.getGraphFormat
@@ -83,11 +114,13 @@ class GraphXPlatform extends Platform {
 				case Algorithm.STATS => new LocalClusteringCoefficientJob(path, format, outPath)
 				case x => throw new IllegalArgumentException(s"Invalid algorithm type: $x")
 			}
-			
+
+
 			if (job.hasValidInput) {
 				job.runJob
 				// TODO: After executing the job, any intermediate and output data should be
 				// verified and/or cleaned up. This should preferably be configurable.
+
 				new PlatformBenchmarkResult(NestedConfiguration.empty())
 			} else {
 				throw new IllegalArgumentException("Invalid parameters for job")
@@ -111,4 +144,6 @@ class GraphXPlatform extends Platform {
 		catch {
 			case ex: ConfigurationException => NestedConfiguration.empty
 		}
+
+	def getGranulaModel: JobModel = new GraphX;
 }
